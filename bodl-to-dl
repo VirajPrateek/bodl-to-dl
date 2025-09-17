@@ -1,0 +1,323 @@
+<script>
+// Function to map BODL events to GA4 ecommerce structure and push to dataLayer
+function subscribeOnBodlEventsForGA4() {
+  // Prevent script from running multiple times
+  if (window.bodlEventsInitialized) {
+    console.log('BODL events already initialized');
+    return;
+  }
+  window.bodlEventsInitialized = true;
+
+  console.log('run subscribeOnBodlEventsForGA4()');
+
+  // Ensure window and BODL objects exist
+  if (
+    !window ||
+    typeof window.bodlEvents === 'undefined' ||
+    typeof window.bodlEvents.banner === 'undefined' ||
+    typeof window.bodlEvents.checkout === 'undefined' ||
+    typeof window.bodlEvents.cart === 'undefined' ||
+    typeof window.bodlEvents.product === 'undefined' ||
+    typeof window.bodlEvents.consent === 'undefined'
+  ) {
+    console.log('BODL not defined');
+    return;
+  }
+
+  // Initialize dataLayer if it doesn't exist
+  window.dataLayer = window.dataLayer || [];
+
+  // Track processed event IDs to prevent duplicates
+  window.bodlProcessedEvents = window.bodlProcessedEvents || new Set();
+  // Track if purchase has occurred in session
+  window.bodlPurchaseOccurred = window.bodlPurchaseOccurred || false;
+  // Track last add_to_cart timestamp for debouncing
+  window.bodlLastAddToCartTime = window.bodlLastAddToCartTime || 0;
+
+  // Fallback queue for add_to_cart to ensure push before page unload
+  window.bodlQueue = window.bodlQueue || [];
+  function pushToDataLayer(eventData) {
+    // Generate a fallback event_id if not provided
+    if (!eventData.event_id) {
+      eventData.event_id = eventData.event + '_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+    }
+    // Skip if event_id has already been processed
+    if (window.bodlProcessedEvents.has(eventData.event_id)) {
+      console.log('Duplicate event skipped:', eventData.event, eventData.event_id);
+      return;
+    }
+    // Add event_id to processed set
+    window.bodlProcessedEvents.add(eventData.event_id);
+    // Mark purchase occurrence
+    if (eventData.event === 'bodl_purchase') {
+      window.bodlPurchaseOccurred = true;
+    }
+    window.dataLayer.push(eventData);
+    // Store in queue as fallback (except for purchase)
+    if (eventData.event !== 'bodl_purchase') {
+      window.bodlQueue.push(eventData);
+    }
+  }
+
+  // Process queue on page unload to ensure add_to_cart is sent
+  window.addEventListener('beforeunload', function() {
+    while (window.bodlQueue.length > 0) {
+      var eventData = window.bodlQueue.shift();
+      if (eventData.event_id && window.bodlProcessedEvents.has(eventData.event_id)) {
+        continue;
+      }
+      window.dataLayer.push(eventData);
+      if (eventData.event_id) {
+        window.bodlProcessedEvents.add(eventData.event_id);
+      }
+    }
+  });
+
+  // Helper function to map BODL line_items to GA4 items structure
+  function mapItems(lineItems) {
+    return lineItems.map((item, index) => ({
+      item_id: item.product_name, // Set item_id to match item_name
+      item_name: item.product_name,
+      item_brand: item.brand_name,
+      item_category: item.category_names && item.category_names[0] ? item.category_names[0] : '',
+      item_category2: item.category_names && item.category_names[1] ? item.category_names[1] : '',
+      item_category3: item.category_names && item.category_names[2] ? item.category_names[2] : '',
+      item_category4: item.category_names && item.category_names[3] ? item.category_names[3] : '',
+      item_category5: item.category_names && item.category_names[4] ? item.category_names[4] : '',
+      item_variant: item.variant_id,
+      price: item.purchase_price,
+      quantity: item.quantity,
+      discount: item.discount,
+      currency: item.currency,
+      index: index,
+      coupon: item.coupon_amount > 0 ? item.coupon_amount : undefined
+    }));
+  }
+
+  // Consent loaded event
+  if (typeof window.bodlEvents.consent.loaded === 'function') {
+    window.bodlEvents.consent.loaded((payload) => {
+      pushToDataLayer({
+        event: 'bodl_consent_loaded',
+        consent: {
+          advertising: payload.advertising,
+          analytics: payload.analytics,
+          functional: payload.functional
+        },
+        event_id: payload.event_id
+      });
+    });
+  }
+
+  // Consent updated event
+  if (typeof window.bodlEvents.consent.updated === 'function') {
+    window.bodlEvents.consent.updated((payload) => {
+      pushToDataLayer({
+        event: 'bodl_consent_updated',
+        consent: {
+          advertising: payload.advertising,
+          analytics: payload.analytics,
+          functional: payload.functional
+        },
+        event_id: payload.event_id
+      });
+    });
+  }
+
+  // Keyword search event
+  if (typeof window.bodlEvents.product.searchPerformed === 'function') {
+    window.bodlEvents.product.searchPerformed((payload) => {
+      pushToDataLayer({
+        event: 'bodl_search',
+        search_term: payload.search_keyword,
+        event_id: payload.event_id
+      });
+    });
+  }
+
+  // View banner event (custom event, not standard GA4 ecommerce)
+  if (typeof window.bodlEvents.banner.viewed === 'function') {
+    window.bodlEvents.banner.viewed((payload) => {
+      pushToDataLayer({
+        event: 'bodl_view_banner',
+        banner_id: payload.banner_id,
+        banner_name: payload.banner_name,
+        channel_id: payload.channel_id,
+        event_id: payload.event_id
+      });
+    });
+  }
+
+  // View product category event
+  if (typeof window.bodlEvents.product.categoryViewed === 'function') {
+    window.bodlEvents.product.categoryViewed((payload) => {
+      pushToDataLayer({
+        event: 'bodl_view_item_list',
+        ecommerce: {
+          item_list_id: payload.category_id,
+          item_list_name: payload.category_name,
+          items: mapItems(payload.line_items)
+        },
+        event_id: payload.event_id
+      });
+    });
+  }
+
+  // View product page event
+  if (typeof window.bodlEvents.product.pageViewed === 'function') {
+    window.bodlEvents.product.pageViewed((payload) => {
+      pushToDataLayer({
+        event: 'bodl_view_item',
+        ecommerce: {
+          currency: payload.currency,
+          value: payload.product_value,
+          items: mapItems(payload.line_items)
+        },
+        event_id: payload.event_id
+      });
+    });
+  }
+
+  // Add product to cart event (prioritized for reliability with debouncing)
+  if (typeof window.bodlEvents.cart.addItem === 'function') {
+    window.bodlEvents.cart.addItem((payload) => {
+      // Debounce: Ignore events within 500ms of the last add_to_cart
+      var now = Date.now();
+      if (now - window.bodlLastAddToCartTime < 500) {
+        console.log('Debounced duplicate bodl_add_to_cart:', payload.event_id);
+        return;
+      }
+      window.bodlLastAddToCartTime = now;
+
+      var eventData = {
+        event: 'bodl_add_to_cart',
+        ecommerce: {
+          currency: payload.currency,
+          value: payload.product_value,
+          items: mapItems(payload.line_items)
+        },
+        event_id: payload.event_id
+      };
+      // Immediate synchronous push
+      try {
+        window.dataLayer.push(eventData);
+        // Clear from queue if already pushed
+        window.bodlQueue = window.bodlQueue.filter(item => item.event_id !== eventData.event_id);
+        if (eventData.event_id) {
+          window.bodlProcessedEvents.add(eventData.event_id);
+        }
+      } catch (e) {
+        // Fallback to queue if push fails
+        window.bodlQueue.push(eventData);
+      }
+    });
+  }
+
+  // View cart event
+  if (typeof window.bodlEvents.cart.viewed === 'function') {
+    window.bodlEvents.cart.viewed((payload) => {
+      pushToDataLayer({
+        event: 'bodl_view_cart',
+        ecommerce: {
+          currency: payload.currency,
+          value: payload.cart_value,
+          items: mapItems(payload.line_items)
+        },
+        event_id: payload.event_id
+      });
+    });
+  }
+
+  // Remove product from cart event
+  if (typeof window.bodlEvents.cart.removeItem === 'function') {
+    window.bodlEvents.cart.removeItem((payload) => {
+      pushToDataLayer({
+        event: 'bodl_remove_from_cart',
+        ecommerce: {
+          currency: payload.currency,
+          value: payload.product_value,
+          items: mapItems(payload.line_items)
+        },
+        event_id: payload.event_id
+      });
+    });
+  }
+
+  // Start checkout event
+  if (typeof window.bodlEvents.checkout.checkoutBegin === 'function') {
+    window.bodlEvents.checkout.checkoutBegin((payload) => {
+      // Skip if purchase has already occurred
+      if (window.bodlPurchaseOccurred) {
+        console.log('Skipping bodl_begin_checkout after purchase');
+        return;
+      }
+      pushToDataLayer({
+        event: 'bodl_begin_checkout',
+        ecommerce: {
+          currency: payload.currency,
+          value: payload.cart_value,
+          coupon: payload.coupon_codes ? payload.coupon_codes[0] : undefined,
+          items: mapItems(payload.line_items)
+        },
+        event_id: payload.event_id
+      });
+    });
+  }
+
+  // Add shipping information event
+  if (typeof window.bodlEvents.checkout.shippingDetailsProvided === 'function') {
+    window.bodlEvents.checkout.shippingDetailsProvided((payload) => {
+      pushToDataLayer({
+        event: 'bodl_add_shipping_info',
+        ecommerce: {
+          currency: payload.currency,
+          value: payload.cart_value,
+          coupon: payload.coupon_codes ? payload.coupon_codes[0] : undefined,
+          shipping_tier: payload.shipping_method,
+          items: mapItems(payload.line_items)
+        },
+        event_id: payload.event_id
+      });
+    });
+  }
+
+  // Add payment information event
+  if (typeof window.bodlEvents.checkout.paymentDetailsProvided === 'function') {
+    window.bodlEvents.checkout.paymentDetailsProvided((payload) => {
+      pushToDataLayer({
+        event: 'bodl_add_payment_info',
+        ecommerce: {
+          currency: payload.currency,
+          value: payload.cart_value,
+          coupon: payload.coupon_codes ? payload.coupon_codes[0] : undefined,
+          payment_type: payload.payment_type,
+          items: mapItems(payload.line_items)
+        },
+        event_id: payload.event_id
+      });
+    });
+  }
+
+  // Purchase order event
+  if (typeof window.bodlEvents.checkout.orderPurchased === 'function') {
+    window.bodlEvents.checkout.orderPurchased((payload) => {
+      pushToDataLayer({
+        event: 'bodl_purchase',
+        ecommerce: {
+          currency: payload.currency,
+          value: payload.cart_value,
+          coupon: payload.coupon_codes ? payload.coupon_codes[0] : undefined,
+          shipping: payload.shipping_cost,
+          tax: payload.tax,
+          transaction_id: payload.order_id,
+          items: mapItems(payload.line_items)
+        },
+        event_id: payload.event_id
+      });
+    });
+  }
+}
+
+// Run the function when the page loads
+window.addEventListener('load', subscribeOnBodlEventsForGA4, false);
+ </script>
